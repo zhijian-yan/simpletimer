@@ -24,7 +24,7 @@ Lightweight Embedded Software Timer Library
 ### Git Submodule
 
 ```bash
-git submodule add https://github.com/xxx/softimer.git
+git submodule add https://github.com/zhijian-yan/softimer.git
 ```
 
 ### Direct Integration
@@ -76,7 +76,7 @@ while (1) {
 }
 ```
 
-### Complete Example
+### 7. Complete Example
 
 ```c
 #include "softimer.h"
@@ -415,7 +415,7 @@ Initialize a timer.
 **Parameters**
 
 * `timer` - Timer object
-* `period_ticks` - Timer period in ticks, range `[0, 2147483647]`
+* `period_ticks` - Timer period in ticks, range `[1, 2147483647]`
 * `cb_mode` - Callback execution mode
 * `cb` - Callback function, may be `NULL`
 * `user_data` - User-defined callback parameter
@@ -505,6 +505,16 @@ int stim_set_count(stim_t *timer, uint32_t count);
 
 Set the timer event count.
 
+**Parameters**
+
+* `timer` - Timer object
+* `count` - Event count, pass `0` to reset
+
+**Returns**
+
+* `0` - Success
+* `-STIM_EINVAL` - Invalid parameter
+
 ---
 
 ### stim_get_count
@@ -514,6 +524,16 @@ int stim_get_count(const stim_t *timer, uint32_t *count);
 ```
 
 Get the timer event count.
+
+**Parameters**
+
+* `timer` - Timer object
+* `count` - Pointer to store the event count
+
+**Returns**
+
+* `0` - Success
+* `-STIM_EINVAL` - Invalid parameter
 
 ## Macros
 
@@ -534,7 +554,7 @@ Requirements:
 * Must be a power of two
 * Must not exceed 256
 
-Default value:`16`
+Default value: `16`
 
 ### STIM_MAX_TICKS
 

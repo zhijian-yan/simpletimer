@@ -24,7 +24,7 @@
 ### Git Submodule
 
 ```bash
-git submodule add https://github.com/xxx/softimer.git
+git submodule add https://github.com/zhijian-yan/softimer.git
 ```
 
 ### 直接集成
@@ -76,7 +76,7 @@ while (1) {
 }
 ```
 
-### 完整示例
+### 7. 完整示例
 
 ```c
 #include "softimer.h"
@@ -406,7 +406,7 @@ int stim_init(stim_t *timer,
 **参数**
 
 * `timer`：定时器对象
-* `period_ticks`：定时器周期（单位：Tick），有效范围 `[0, 2147483647]`
+* `period_ticks`：定时器周期（单位：Tick），有效范围 `[1, 2147483647]`
 * `cb_mode`：回调执行模式
 * `cb`：回调函数，可为 `NULL`
 * `user_data`：传递给回调函数的用户数据
@@ -496,6 +496,16 @@ int stim_set_count(stim_t *timer, uint32_t count);
 
 设置定时器事件计数值
 
+**参数**
+
+* `timer`：定时器对象
+* `count`：计数值，传 `0` 可清零
+
+**返回值**
+
+* `0`：成功
+* `-STIM_EINVAL`：参数非法
+
 ---
 
 ### stim_get_count
@@ -505,6 +515,16 @@ int stim_get_count(const stim_t *timer, uint32_t *count);
 ```
 
 获取定时器事件计数值
+
+**参数**
+
+* `timer`：定时器对象
+* `count`：用于接收计数值的指针
+
+**返回值**
+
+* `0`：成功
+* `-STIM_EINVAL`：参数非法
 
 ## 宏
 
