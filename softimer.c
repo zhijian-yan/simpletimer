@@ -71,7 +71,6 @@ static int stim_queue_send(stim_queue_t *queue, const stim_message_t *message) {
     } else {
         queue->buffer[w] = *message;
         queue->write_index = next;
-        stim_unlock(stim_lock_state);
     }
     stim_unlock(stim_lock_state);
     return ret;
