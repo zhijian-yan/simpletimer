@@ -6,16 +6,16 @@
 #include <stddef.h>
 #include <string.h>
 
-#define STIM_STATE_STOPPED 0
-#define STIM_STATE_RUNNING 1
+#define STIM_STATE_STOPPED           0
+#define STIM_STATE_RUNNING           1
 
-#define STIM_COMMAND_STOP 0
-#define STIM_COMMAND_START 1
+#define STIM_COMMAND_STOP            0
+#define STIM_COMMAND_START           1
 
-#define stim_check_param(param) assert((param) != 0)
-#define stim_is_pow2(val) (!(val == 0 || val & (val - 1)))
+#define stim_check_param(param)      assert((param) != 0)
+#define stim_is_pow2(val)            (!(val == 0 || val & (val - 1)))
 #define stim_tick_out_of_range(tick) (tick > STIM_MAX_TICKS || tick == 0)
-#define stim_container_of(ptr, type, member)                                   \
+#define stim_container_of(ptr, type, member) \
     ((type *)((char *)(ptr) - offsetof(type, member)))
 
 void stim_timebase_inc(stim_group_t *group) {
