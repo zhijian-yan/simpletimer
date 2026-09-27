@@ -36,28 +36,24 @@ static uint32_t stim_get_timebase(stim_group_t *group) {
 }
 
 static int stim_queue_send(stim_queue_t *queue, const stim_message_t *message) {
-    int stim_lock_state = stim_lock();
     uint8_t ret = 0;
+    int stim_lock_state = stim_lock();
     uint8_t w = queue->write_index;
     uint8_t next = (w + 1) & (queue->length - 1);
-    if (next == queue->read_index) {
+    if (next == queue->read_index)
         ret = 1;
-    } else {
-        queue->buffer[w] = *message;
-        queue->write_index = next;
-    }
+    queue->buffer[w] = *message;
+    queue->write_index = next;
     stim_unlock(stim_lock_state);
     return ret;
 }
 
 static int stim_queue_receive(stim_queue_t *queue, stim_message_t *message) {
     uint8_t r = queue->read_index;
-    if (r == queue->write_index) {
+    if (r == queue->write_index)
         return 1;
-    } else {
-        *message = queue->buffer[r];
-        queue->read_index = (r + 1) & (queue->length - 1);
-    }
+    *message = queue->buffer[r];
+    queue->read_index = (r + 1) & (queue->length - 1);
     return 0;
 }
 
