@@ -36,16 +36,17 @@ static uint32_t stim_get_timebase(stim_group_t *group) {
 }
 
 static int stim_queue_send(stim_queue_t *queue, const stim_message_t *message) {
-    uint8_t ret = 0;
     int stim_lock_state = stim_lock();
     uint8_t w = queue->write_index;
     uint8_t next = (w + 1) & (queue->length - 1);
-    if (next == queue->read_index)
-        ret = 1;
+    if (next == queue->read_index) {
+        stim_unlock(stim_lock_state);
+        return 1;
+    }
     queue->buffer[w] = *message;
     queue->write_index = next;
     stim_unlock(stim_lock_state);
-    return ret;
+    return 0;
 }
 
 static int stim_queue_receive(stim_queue_t *queue, stim_message_t *message) {
@@ -179,6 +180,7 @@ int stim_poll(stim_group_t *group) {
 
 void stim_dispatch(uint8_t max_event_num, stim_group_t *group) {
     stim_check_param(group);
+    stim_check_param(group->cb);
     stim_message_t message;
     while (max_event_num > 0 &&
            !stim_queue_receive(&group->expired_queue, &message)) {
