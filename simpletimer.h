@@ -10,15 +10,11 @@ extern "C" {
 
 #include <stdint.h>
 
-static inline int stim_lock(void) {
-    /* Disable interrupts if needed */
-    return 0;
-}
-
-static inline void stim_unlock(int stim_lock_state) {
-    /* Restore interrupt state */
-    (void)stim_lock_state;
-}
+#ifdef STIM_PORT_HEADER
+#include STIM_PORT_HEADER
+#else
+#include "simpletimer_port.h"
+#endif
 
 #define STIM_MAX_PERIOD_TICKS (((uint32_t)(-1)) >> 1)
 #define STIM_MAX_QUEUE_SIZE   (256)

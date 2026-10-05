@@ -44,7 +44,9 @@ static int stim_queue_send(stim_queue_t *queue, const stim_message_t *message) {
         stim_unlock(stim_lock_state);
         return 1;
     }
+    STIM_ACQUIRE();
     queue->buffer[w] = *message;
+    STIM_RELEASE();
     queue->write_index = next;
     stim_unlock(stim_lock_state);
     return 0;
@@ -54,7 +56,9 @@ static int stim_queue_receive(stim_queue_t *queue, stim_message_t *message) {
     uint8_t r = queue->read_index;
     if (r == queue->write_index)
         return 1;
+    STIM_ACQUIRE();
     *message = queue->buffer[r];
+    STIM_RELEASE();
     queue->read_index = (r + 1) & queue->capacity;
     return 0;
 }
@@ -62,6 +66,7 @@ static int stim_queue_receive(stim_queue_t *queue, stim_message_t *message) {
 static void stim_list_add(stim_t *timer, struct stim_node *head, uint32_t now) {
     struct stim_node *posi;
     struct stim_node *node = &timer->node;
+    stim_check_param(node->next != NULL && node->prev != NULL);
     if (node->next == node) {
         for (posi = head->next; posi != head; posi = posi->next) {
             stim_t *entry = stim_container_of(posi, stim_t, node);
@@ -188,7 +193,6 @@ int stim_poll(stim_group_t *group) {
 
 void stim_dispatch(uint8_t max_event_count, stim_group_t *group) {
     stim_check_param(group);
-    stim_check_param(group->expired_cb);
     stim_message_t message;
     while (max_event_count > 0 &&
            !stim_queue_receive(&group->expired_queue, &message)) {
