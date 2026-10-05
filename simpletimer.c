@@ -6,15 +6,16 @@
 #include <stddef.h>
 #include <string.h>
 
-#define STIM_STATE_STOPPED           0
-#define STIM_STATE_RUNNING           1
+#define STIM_STATE_STOPPED      0
+#define STIM_STATE_RUNNING      1
 
-#define STIM_COMMAND_STOP            0
-#define STIM_COMMAND_START           1
+#define STIM_COMMAND_STOP       0
+#define STIM_COMMAND_START      1
 
-#define stim_check_param(param)      assert((param) != 0)
-#define stim_is_pow2(val)            (!(val == 0 || val & (val - 1)))
-#define stim_tick_out_of_range(tick) (tick > STIM_MAX_TICKS || tick == 0)
+#define stim_check_param(param) assert((param) != 0)
+#define stim_is_pow2(val)       (!(val == 0 || val & (val - 1)))
+#define stim_period_out_of_range(period) \
+    (period > STIM_MAX_PERIOD_TICKS || period == 0)
 #define stim_container_of(ptr, type, member) \
     ((type *)((char *)(ptr) - offsetof(type, member)))
 
@@ -38,7 +39,7 @@ static uint32_t stim_get_timebase(stim_group_t *group) {
 static int stim_queue_send(stim_queue_t *queue, const stim_message_t *message) {
     int stim_lock_state = stim_lock();
     uint8_t w = queue->write_index;
-    uint8_t next = (w + 1) & (queue->length - 1);
+    uint8_t next = (w + 1) & queue->capacity;
     if (next == queue->read_index) {
         stim_unlock(stim_lock_state);
         return 1;
@@ -54,7 +55,7 @@ static int stim_queue_receive(stim_queue_t *queue, stim_message_t *message) {
     if (r == queue->write_index)
         return 1;
     *message = queue->buffer[r];
-    queue->read_index = (r + 1) & (queue->length - 1);
+    queue->read_index = (r + 1) & queue->capacity;
     return 0;
 }
 
@@ -88,7 +89,7 @@ static void stim_list_del(stim_t *timer) {
 
 void stim_init_timer(stim_t *timer, uint32_t period_ticks, void *user_data) {
     stim_check_param(timer);
-    stim_check_param(!stim_tick_out_of_range(period_ticks));
+    stim_check_param(!stim_period_out_of_range(period_ticks));
     memset(timer, 0, sizeof(stim_t));
     timer->period_ticks = period_ticks;
     timer->user_data = user_data;
@@ -101,14 +102,22 @@ void stim_init_group(stim_group_t *group, stim_group_config_t *config) {
     stim_check_param(group);
     stim_check_param(config);
     stim_check_param(config->command_buffer);
-    stim_check_param(stim_is_pow2(config->command_length));
+    stim_check_param(stim_is_pow2(config->command_queue_size));
+    stim_check_param(config->command_queue_size <= STIM_MAX_QUEUE_SIZE);
+    stim_check_param(config->command_queue_size >= STIM_MIN_QUEUE_SIZE);
+    if (config->callback_mode == STIM_CALLBACK_MODE_DEFERRED) {
+        stim_check_param(config->expired_buffer);
+        stim_check_param(stim_is_pow2(config->expired_queue_size));
+        stim_check_param(config->expired_queue_size <= STIM_MAX_QUEUE_SIZE);
+        stim_check_param(config->expired_queue_size >= STIM_MIN_QUEUE_SIZE);
+    }
     memset(group, 0, sizeof(stim_group_t));
-    group->cb = config->cb;
-    group->cb_mode = config->cb_mode;
+    group->expired_cb = config->expired_cb;
+    group->callback_mode = config->callback_mode;
     group->command_queue.buffer = config->command_buffer;
-    group->command_queue.length = config->command_length;
+    group->command_queue.capacity = (uint8_t)(config->command_queue_size - 1);
     group->expired_queue.buffer = config->expired_buffer;
-    group->expired_queue.length = config->expired_length;
+    group->expired_queue.capacity = (uint8_t)(config->expired_queue_size - 1);
     group->head.next = &group->head;
     group->head.prev = &group->head;
 }
@@ -150,8 +159,7 @@ static void stim_process_commands(uint32_t now, stim_group_t *group) {
 int stim_poll(stim_group_t *group) {
     stim_check_param(group);
     int ret = 0;
-    stim_message_t message;
-    message.command = 0;
+    stim_message_t message = {0};
     uint32_t now = stim_get_timebase(group);
     stim_process_commands(now, group);
     while (group->head.next != &group->head) {
@@ -160,14 +168,14 @@ int stim_poll(stim_group_t *group) {
             stim_list_del(timer);
             timer->expire_ticks += timer->period_ticks;
             int stim_lock_state = stim_lock();
-            timer->count += 1;
+            timer->event_count += 1;
             stim_unlock(stim_lock_state);
             stim_list_add(timer, &group->head, now);
-            if (group->cb) {
-                if (group->cb_mode == STIM_CB_MODE_IMMEDIATE) {
-                    group->cb(timer);
-                } else if (group->expired_queue.buffer) {
-                    stim_check_param(stim_is_pow2(group->expired_queue.length));
+            if (group->expired_cb) {
+                if (group->callback_mode == STIM_CALLBACK_MODE_IMMEDIATE) {
+                    group->expired_cb(timer);
+                } else if (group->callback_mode ==
+                           STIM_CALLBACK_MODE_DEFERRED) {
                     message.timer = timer;
                     ret += stim_queue_send(&group->expired_queue, &message);
                 }
@@ -178,28 +186,28 @@ int stim_poll(stim_group_t *group) {
     return ret;
 }
 
-void stim_dispatch(uint8_t max_event_num, stim_group_t *group) {
+void stim_dispatch(uint8_t max_event_count, stim_group_t *group) {
     stim_check_param(group);
-    stim_check_param(group->cb);
+    stim_check_param(group->expired_cb);
     stim_message_t message;
-    while (max_event_num > 0 &&
+    while (max_event_count > 0 &&
            !stim_queue_receive(&group->expired_queue, &message)) {
-        max_event_num -= 1;
-        group->cb(message.timer);
+        max_event_count -= 1;
+        group->expired_cb(message.timer);
     }
 }
 
-void stim_set_count(stim_t *timer, uint32_t count) {
+void stim_set_event_count(stim_t *timer, uint16_t event_count) {
     stim_check_param(timer);
     int stim_lock_state = stim_lock();
-    timer->count = count;
+    timer->event_count = event_count;
     stim_unlock(stim_lock_state);
 }
 
-uint16_t stim_get_count(const stim_t *timer) {
+uint16_t stim_get_event_count(const stim_t *timer) {
     stim_check_param(timer);
     int stim_lock_state = stim_lock();
-    uint16_t count = timer->count;
+    uint16_t event_count = timer->event_count;
     stim_unlock(stim_lock_state);
-    return count;
+    return event_count;
 }
