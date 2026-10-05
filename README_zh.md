@@ -54,17 +54,17 @@ stim_message_t expired_buffer[16];
 
 ```c
 stim_group_config_t config = {
-    .cb = stim_callback,
-    .cb_mode = STIM_CB_MODE_DEFERRED,
+    .expired_cb = stim_callback,
+    .callback_mode = STIM_CALLBACK_MODE_DEFERRED,
     .command_buffer = command_buffer,
-    .command_length = 16,
+    .command_queue_size = 16,
     .expired_buffer = expired_buffer,
-    .expired_length = 16,
+    .expired_queue_size = 16,
 };
 stim_init_group(&group, &config);
 ```
 
-`command_buffer` 与 `command_length` 为必需项；`expired_buffer` / `expired_length` 仅在延迟模式下需要
+`command_buffer` 与 `command_queue_size` 为必需项；`expired_buffer` / `expired_queue_size` 在 `STIM_CALLBACK_MODE_DEFERRED` 模式下必需
 
 ### 3. 初始化定时器
 
@@ -81,7 +81,7 @@ stim_init_timer(&timers[1], 100, (void *)2);
 void stim_callback(stim_t *timer) {
     switch ((int)timer->user_data) {
     case 1:
-        printf("timer1 count:%u\r\n", stim_get_count(timer));
+        printf("timer1 count:%u\r\n", stim_get_event_count(timer));
         break;
     case 2:
         led_toggle();
@@ -114,7 +114,7 @@ while (1) {
 }
 ```
 
-`stim_dispatch()` 仅对 `STIM_CB_MODE_DEFERRED` 模式有效
+`stim_dispatch()` 仅对 `STIM_CALLBACK_MODE_DEFERRED` 模式有效
 
 ### 8. 完整示例
 
@@ -130,7 +130,7 @@ stim_message_t expired_buffer[16];
 static void stim_callback(stim_t *timer) {
     switch ((int)timer->user_data) {
     case 1:
-        printf("timer1 count:%u\r\n", stim_get_count(timer));
+        printf("timer1 count:%u\r\n", stim_get_event_count(timer));
         break;
     case 2:
         led_toggle();
@@ -146,12 +146,12 @@ int main(void) {
     hardware_init();
 
     stim_group_config_t config = {
-        .cb = stim_callback,
-        .cb_mode = STIM_CB_MODE_DEFERRED,
+        .expired_cb = stim_callback,
+        .callback_mode = STIM_CALLBACK_MODE_DEFERRED,
         .command_buffer = command_buffer,
-        .command_length = 16,
+        .command_queue_size = 16,
         .expired_buffer = expired_buffer,
-        .expired_length = 16,
+        .expired_queue_size = 16,
     };
     stim_init_group(&group, &config);
 
@@ -175,7 +175,7 @@ int main(void) {
 
 定时器以“分组（group）”为单位进行管理
 
-* `stim_t` 描述单个定时器的周期、到期时间、计数与链表节点
+* `stim_t` 描述单个定时器的周期、到期时间、事件计数与链表节点
 * `stim_group_t` 描述一组定时器共享的时基、回调、回调模式与两个队列
 
 分组模型带来的好处：
@@ -200,7 +200,7 @@ simpletimer 采用 **MPSC（Multi-Producer Single-Consumer）** 架构实现异�
         ┌──────────┴──────────┐
         │                     │
         ▼                     ▼
-   stim_poll(group)   stim_dispatch(num, group)
+   stim_poll(group)   stim_dispatch(max_event_count, group)
         │                     │
         │                     ▼
         │               执行延迟回调
@@ -209,14 +209,14 @@ simpletimer 采用 **MPSC（Multi-Producer Single-Consumer）** 架构实现异�
         │
         ├── 检查表头定时器是否到期
         │
-        ├── 更新到期时间与计数并重新入表
+        ├── 更新到期时间与事件计数并重新入表
         │
         └── 生成到期事件
                │
        ┌───────┴────────┐
        │                │
        ▼                ▼
-   立即回调        到期事件队列
+   立即回调        事件队列
 ```
 
 所有定时器管理逻辑均在 `stim_poll()` 中完成，`stim_start_timer()` 和 `stim_stop_timer()` 不会直接修改定时器链表，而是向命令队列发送请求，由 `stim_poll()` 统一处理
@@ -294,7 +294,7 @@ now    = 0xFFFFFFF0
 为了保证比较结果有效需满足：
 
 ```text
-period_ticks <= INT32_MAX == STIM_MAX_TICKS == 2147483647
+period_ticks <= INT32_MAX == STIM_MAX_PERIOD_TICKS == 2147483647
 ```
 
 ---
@@ -342,7 +342,7 @@ stim_poll(group)
     └── while (表头定时器已到期)
             ├── 从链表移除
             ├── expire_ticks += period_ticks
-            ├── count += 1
+            ├── event_count += 1
             ├── 重新插入链表
             └── 立即模式 ? 执行回调 : 事件入队
 ```
@@ -388,7 +388,7 @@ Timer Expired
 Timer Expired
       │
       ▼
-Expired Queue
+Event Queue
       │
       ▼
 stim_dispatch()
@@ -425,7 +425,7 @@ stim_dispatch()
 ```c
 typedef struct {
     stim_message_t *buffer;       /* 用户提供的缓冲区 */
-    uint8_t length;               /* 必须是 2 的幂（uint8_t 下最大为 128） */
+    uint8_t capacity;             /* 索引掩码 = 缓冲区元素个数 - 1，由 stim_init_group() 设置 */
     volatile uint8_t write_index;
     volatile uint8_t read_index;
 } stim_queue_t;
@@ -433,9 +433,11 @@ typedef struct {
 
 要求：
 
-* `buffer` 不为 `NULL` 时 `length` 必须为 2 的幂
+* `command_queue_size` 是 `command_buffer` 的元素个数，必须为 2 的幂，且介于 `STIM_MIN_QUEUE_SIZE`（`2`）与 `STIM_MAX_QUEUE_SIZE`（`256`）之间
+* `expired_queue_size` 与 `expired_buffer` 同理，仅在 `STIM_CALLBACK_MODE_DEFERRED` 模式下使用
+* 环形队列始终空出一个槽位来区分"满"与"空"，因此 `N` 个元素的队列最多容纳 `N - 1` 条消息
 * 命令队列缓冲区为必需项
-* 到期事件队列仅在 `STIM_CB_MODE_DEFERRED` 模式下需要
+* 到期事件队列缓冲区在 `STIM_CALLBACK_MODE_DEFERRED` 模式下为必需项
 * 队列满时事件将被丢弃，`stim_poll()` 的返回值会累加丢弃数量
 
 ---
@@ -479,8 +481,8 @@ static inline void stim_unlock(int stim_lock_state)
 * `stim_timebase_inc()`
 * `stim_start_timer()`
 * `stim_stop_timer()`
-* `stim_set_count()`
-* `stim_get_count()`
+* `stim_set_event_count()`
+* `stim_get_event_count()`
 
 以下 API 必须遵循单消费者模型：
 
@@ -522,8 +524,8 @@ void stim_init_group(stim_group_t *group, stim_group_config_t *config);
 
 **说明**
 
-* `config->command_length` 必须为 2 的幂
-* `config->expired_buffer` / `config->expired_length` 在延迟模式下使用
+* `config->command_queue_size` 必须为 2 的幂，且介于 `STIM_MIN_QUEUE_SIZE`（`2`）与 `STIM_MAX_QUEUE_SIZE`（`256`）之间
+* `config->expired_buffer` / `config->expired_queue_size` 遵循同样的规则，在 `STIM_CALLBACK_MODE_DEFERRED` 模式下必需
 
 ---
 
@@ -597,8 +599,8 @@ int stim_poll(stim_group_t *group);
 
 处理待执行命令并检查定时器是否到期
 
-* 对于 `STIM_CB_MODE_IMMEDIATE`，直接执行回调
-* 对于 `STIM_CB_MODE_DEFERRED`，产生到期事件并放入队列
+* 对于 `STIM_CALLBACK_MODE_IMMEDIATE`，直接执行回调
+* 对于 `STIM_CALLBACK_MODE_DEFERRED`，产生到期事件并放入队列
 
 **参数**
 
@@ -613,24 +615,24 @@ int stim_poll(stim_group_t *group);
 ### stim_dispatch
 
 ```c
-void stim_dispatch(uint8_t max_event_num, stim_group_t *group);
+void stim_dispatch(uint8_t max_event_count, stim_group_t *group);
 ```
 
 处理到期事件队列并执行回调
 
-仅对 `STIM_CB_MODE_DEFERRED` 模式有效
+仅对 `STIM_CALLBACK_MODE_DEFERRED` 模式有效
 
 **参数**
 
-* `max_event_num`：单次调用处理事件的最大数量
+* `max_event_count`：单次调用处理事件的最大数量
 * `group`：定时器所属分组
 
 ---
 
-### stim_set_count
+### stim_set_event_count
 
 ```c
-void stim_set_count(stim_t *timer, uint32_t count);
+void stim_set_event_count(stim_t *timer, uint16_t event_count);
 ```
 
 设置定时器事件计数值
@@ -640,18 +642,18 @@ void stim_set_count(stim_t *timer, uint32_t count);
 **参数**
 
 * `timer`：定时器对象
-* `count`：计数值，传 `0` 可清零
+* `event_count`：事件计数值，传 `0` 可清零
 
 **说明**
 
-`stim_t.count` 的实际类型为 `uint16_t`，超出范围的值会被截断
+`stim_t.event_count` 的实际类型为 `uint16_t`，计数超过 65535 后会回绕
 
 ---
 
-### stim_get_count
+### stim_get_event_count
 
 ```c
-uint16_t stim_get_count(const stim_t *timer);
+uint16_t stim_get_event_count(const stim_t *timer);
 ```
 
 获取定时器事件计数值
@@ -691,7 +693,7 @@ typedef struct {
     void *user_data;
     uint32_t expire_ticks;
     uint32_t period_ticks;
-    volatile uint16_t count;
+    volatile uint16_t event_count;
     uint8_t state;
 } stim_t;
 ```
@@ -700,8 +702,8 @@ typedef struct {
 * `user_data`：用户数据，通过 `stim_init_timer()` 设置
 * `expire_ticks`：下一次到期的绝对 Tick
 * `period_ticks`：定时器周期
-* `count`：到期计数，每次到期自动加一
-* `state`：运行状态（停止 / 运行）
+* `event_count`：到期事件计数，每次到期自动加一
+* `state`：运行状态（`0` = 停止，`1` = 运行）
 
 必须通过 `stim_init_timer()` 初始化
 
@@ -714,28 +716,28 @@ typedef struct {
 } stim_message_t;
 ```
 
-命令队列与事件队列中的消息单元
+命令队列或到期事件队列中的消息单元。`command` 字段仅在命令队列中有意义
 
 ### stim_queue_t
 
 ```c
 typedef struct {
     stim_message_t *buffer;
-    uint8_t length;
+    uint8_t capacity;
     volatile uint8_t write_index;
     volatile uint8_t read_index;
 } stim_queue_t;
 ```
 
-环形队列
+环形队列。`capacity` 是 `stim_init_group()` 维护的索引掩码：`buffer` 的元素个数为 `capacity + 1`，最多可排队 `capacity` 条消息
 
 ### stim_group_t
 
 ```c
 typedef struct {
     volatile uint32_t timebase_ticks;
-    void (*cb)(stim_t *timer);
-    stim_cb_mode_t cb_mode;
+    void (*expired_cb)(stim_t *timer);
+    stim_callback_mode_t callback_mode;
     stim_queue_t command_queue;
     stim_queue_t expired_queue;
     struct stim_node head;
@@ -745,8 +747,8 @@ typedef struct {
 定时器分组
 
 * `timebase_ticks`：分组时基，由 `stim_timebase_inc()` 递增
-* `cb`：到期回调，回调参数为定时器指针
-* `cb_mode`：回调执行模式
+* `expired_cb`：到期回调，回调参数为定时器指针
+* `callback_mode`：回调执行模式
 * `command_queue`：启动 / 停止命令队列
 * `expired_queue`：延迟模式下的到期事件队列
 * `head`：有序链表头节点
@@ -757,40 +759,52 @@ typedef struct {
 
 ```c
 typedef struct {
-    void (*cb)(stim_t *timer);
-    stim_cb_mode_t cb_mode;
+    void (*expired_cb)(stim_t *timer);
+    stim_callback_mode_t callback_mode;
     stim_message_t *command_buffer;
     stim_message_t *expired_buffer;
-    uint8_t command_length;
-    uint8_t expired_length;
+    uint16_t command_queue_size;
+    uint16_t expired_queue_size;
 } stim_group_config_t;
 ```
 
 分组初始化配置
 
-* `cb`：到期回调
-* `cb_mode`：回调执行模式
-* `command_buffer` / `command_length`：命令队列缓冲区与长度（必需）
-* `expired_buffer` / `expired_length`：到期事件队列缓冲区与长度（延迟模式需要）
+* `expired_cb`：到期回调
+* `callback_mode`：回调执行模式
+* `command_buffer` / `command_queue_size`：命令队列缓冲区与其元素个数（必需；须为 2 的幂，且介于 `STIM_MIN_QUEUE_SIZE` 与 `STIM_MAX_QUEUE_SIZE` 之间）
+* `expired_buffer` / `expired_queue_size`：到期事件队列缓冲区与其元素个数（规则同上；延迟模式下必需）
 
 ## 宏与枚举
 
-### stim_cb_mode_t
+### stim_callback_mode_t
 
 ```c
 typedef enum {
-    STIM_CB_MODE_DEFERRED = 0,
-    STIM_CB_MODE_IMMEDIATE,
-} stim_cb_mode_t;
+    STIM_CALLBACK_MODE_DEFERRED = 0,
+    STIM_CALLBACK_MODE_IMMEDIATE,
+} stim_callback_mode_t;
 ```
 
 回调执行模式
 
-* `STIM_CB_MODE_DEFERRED`：到期事件先入队，由 `stim_dispatch()` 执行
-* `STIM_CB_MODE_IMMEDIATE`：到期时在 `stim_poll()` 中立即执行
+* `STIM_CALLBACK_MODE_DEFERRED`：到期事件先入队，由 `stim_dispatch()` 执行
+* `STIM_CALLBACK_MODE_IMMEDIATE`：到期时在 `stim_poll()` 中立即执行
 
-### STIM_MAX_TICKS
+### STIM_MAX_PERIOD_TICKS
 
 允许设置的最大定时器周期，值为 `((uint32_t)(-1)) >> 1`（`0x7FFFFFFF`，即 `INT32_MAX`）
 
 该值保证有符号差值比较在 Tick 回绕时仍然正确
+
+### STIM_MAX_QUEUE_SIZE
+
+队列缓冲区元素个数的上限（`256`）。
+
+由于环形队列始终空出一个槽位，最多可排队 255 条消息。
+
+### STIM_MIN_QUEUE_SIZE
+
+队列缓冲区元素个数的下限（`2`）。
+
+`2` 个元素的队列最多容纳 1 条消息。

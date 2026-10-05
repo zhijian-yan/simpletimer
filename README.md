@@ -54,17 +54,17 @@ stim_message_t expired_buffer[16];
 
 ```c
 stim_group_config_t config = {
-    .cb = stim_callback,
-    .cb_mode = STIM_CB_MODE_DEFERRED,
+    .expired_cb = stim_callback,
+    .callback_mode = STIM_CALLBACK_MODE_DEFERRED,
     .command_buffer = command_buffer,
-    .command_length = 16,
+    .command_queue_size = 16,
     .expired_buffer = expired_buffer,
-    .expired_length = 16,
+    .expired_queue_size = 16,
 };
 stim_init_group(&group, &config);
 ```
 
-`command_buffer` and `command_length` are required; `expired_buffer` / `expired_length` are only needed in deferred mode.
+`command_buffer` and `command_queue_size` are required; `expired_buffer` / `expired_queue_size` are required in `STIM_CALLBACK_MODE_DEFERRED` mode.
 
 ### 3. Initialize the Timers
 
@@ -81,7 +81,7 @@ stim_init_timer(&timers[1], 100, (void *)2);
 void stim_callback(stim_t *timer) {
     switch ((int)timer->user_data) {
     case 1:
-        printf("timer1 count:%u\r\n", stim_get_count(timer));
+        printf("timer1 count:%u\r\n", stim_get_event_count(timer));
         break;
     case 2:
         led_toggle();
@@ -114,7 +114,7 @@ while (1) {
 }
 ```
 
-`stim_dispatch()` is only required in `STIM_CB_MODE_DEFERRED` mode.
+`stim_dispatch()` is only required in `STIM_CALLBACK_MODE_DEFERRED` mode.
 
 ### 8. Complete Example
 
@@ -130,7 +130,7 @@ stim_message_t expired_buffer[16];
 static void stim_callback(stim_t *timer) {
     switch ((int)timer->user_data) {
     case 1:
-        printf("timer1 count:%u\r\n", stim_get_count(timer));
+        printf("timer1 count:%u\r\n", stim_get_event_count(timer));
         break;
     case 2:
         led_toggle();
@@ -146,12 +146,12 @@ int main(void) {
     hardware_init();
 
     stim_group_config_t config = {
-        .cb = stim_callback,
-        .cb_mode = STIM_CB_MODE_DEFERRED,
+        .expired_cb = stim_callback,
+        .callback_mode = STIM_CALLBACK_MODE_DEFERRED,
         .command_buffer = command_buffer,
-        .command_length = 16,
+        .command_queue_size = 16,
         .expired_buffer = expired_buffer,
-        .expired_length = 16,
+        .expired_queue_size = 16,
     };
     stim_init_group(&group, &config);
 
@@ -175,7 +175,7 @@ int main(void) {
 
 Timers are managed in units of "groups":
 
-* `stim_t` holds the period, expiration time, count, and list node of a single timer
+* `stim_t` holds the period, expiration time, event count, and list node of a single timer
 * `stim_group_t` holds the timebase, callback, callback mode, and the two queues shared by a group of timers
 
 Benefits of the group model:
@@ -200,7 +200,7 @@ simpletimer uses an **MPSC (Multi-Producer Single-Consumer)** architecture for a
         ┌──────────┴──────────┐
         │                     │
         ▼                     ▼
-   stim_poll(group)   stim_dispatch(num, group)
+   stim_poll(group)   stim_dispatch(max_event_count, group)
         │                     │
         │                     ▼
         │            Execute Deferred
@@ -210,7 +210,7 @@ simpletimer uses an **MPSC (Multi-Producer Single-Consumer)** architecture for a
         │
         ├── Check Head Expiration
         │
-        ├── Update Expiration / Count
+        ├── Update Expiration / Event Count
         │   and Re-insert
         │
         └── Generate Events
@@ -295,7 +295,7 @@ the comparison remains valid. To guarantee correctness:
 
 ```text
 period_ticks <= INT32_MAX
-             = STIM_MAX_TICKS
+             = STIM_MAX_PERIOD_TICKS
              = 2147483647
 ```
 
@@ -342,7 +342,7 @@ stim_poll(group)
     └── while (head timer expired)
             ├── remove from list
             ├── expire_ticks += period_ticks
-            ├── count += 1
+            ├── event_count += 1
             ├── re-insert into list
             └── immediate mode ? invoke callback : enqueue event
 ```
@@ -388,7 +388,7 @@ The callback is executed immediately when the timer expires.
 Timer Expired
       │
       ▼
- Expired Queue
+ Event Queue
       │
       ▼
 stim_dispatch()
@@ -425,7 +425,7 @@ Each group embeds two ring buffers, both backed by user-provided storage:
 ```c
 typedef struct {
     stim_message_t *buffer;       /* user-provided buffer */
-    uint8_t length;               /* must be a power of two (max 128 for uint8_t) */
+    uint8_t capacity;             /* index mask = element count - 1, set by stim_init_group() */
     volatile uint8_t write_index;
     volatile uint8_t read_index;
 } stim_queue_t;
@@ -433,9 +433,11 @@ typedef struct {
 
 Requirements:
 
-* When `buffer` is not `NULL`, `length` must be a power of two
+* `command_queue_size` is the number of elements in `command_buffer`; it must be a power of two between `STIM_MIN_QUEUE_SIZE` (`2`) and `STIM_MAX_QUEUE_SIZE` (`256`)
+* `expired_queue_size` applies to `expired_buffer` in the same way, and is only used in `STIM_CALLBACK_MODE_DEFERRED` mode
+* The ring buffer always leaves one slot free to tell a full queue from an empty one, so a queue of `N` elements holds at most `N - 1` messages
 * The command queue buffer is mandatory
-* The expired-event queue is only needed in `STIM_CB_MODE_DEFERRED` mode
+* The expired-event queue buffer is required in `STIM_CALLBACK_MODE_DEFERRED` mode
 * When a queue is full, events are dropped and the return value of `stim_poll()` accumulates the number of drops
 
 ---
@@ -479,8 +481,8 @@ The following APIs may be called from any execution context:
 * `stim_timebase_inc()`
 * `stim_start_timer()`
 * `stim_stop_timer()`
-* `stim_set_count()`
-* `stim_get_count()`
+* `stim_set_event_count()`
+* `stim_get_event_count()`
 
 The following APIs must follow the single-consumer rule:
 
@@ -522,8 +524,8 @@ Initialize a group.
 
 **Notes**
 
-* `config->command_length` must be a power of two
-* `config->expired_buffer` / `config->expired_length` are used in deferred mode
+* `config->command_queue_size` must be a power of two between `STIM_MIN_QUEUE_SIZE` (`2`) and `STIM_MAX_QUEUE_SIZE` (`256`)
+* `config->expired_buffer` / `config->expired_queue_size` follow the same rule and are required in `STIM_CALLBACK_MODE_DEFERRED` mode
 
 ---
 
@@ -597,8 +599,8 @@ int stim_poll(stim_group_t *group);
 
 Process pending commands and check timer expiration.
 
-* Executes callbacks directly for `STIM_CB_MODE_IMMEDIATE`
-* Generates expiration events for `STIM_CB_MODE_DEFERRED`
+* Executes callbacks directly for `STIM_CALLBACK_MODE_IMMEDIATE`
+* Generates expiration events for `STIM_CALLBACK_MODE_DEFERRED`
 
 **Parameters**
 
@@ -613,24 +615,24 @@ Process pending commands and check timer expiration.
 ### stim_dispatch
 
 ```c
-void stim_dispatch(uint8_t max_event_num, stim_group_t *group);
+void stim_dispatch(uint8_t max_event_count, stim_group_t *group);
 ```
 
 Process expiration events and execute callbacks.
 
-Only applicable to `STIM_CB_MODE_DEFERRED`.
+Only applicable to `STIM_CALLBACK_MODE_DEFERRED`.
 
 **Parameters**
 
-* `max_event_num` - Maximum number of events processed in a single call
+* `max_event_count` - Maximum number of events processed in a single call
 * `group` - Group the timers belong to
 
 ---
 
-### stim_set_count
+### stim_set_event_count
 
 ```c
-void stim_set_count(stim_t *timer, uint32_t count);
+void stim_set_event_count(stim_t *timer, uint16_t event_count);
 ```
 
 Set the timer event count.
@@ -640,18 +642,18 @@ This function is internally protected by the lock abstraction and may be called 
 **Parameters**
 
 * `timer` - Timer object
-* `count` - Event count, pass `0` to reset
+* `event_count` - Event count, pass `0` to reset
 
 **Notes**
 
-`stim_t.count` is actually of type `uint16_t`; out-of-range values are truncated.
+`stim_t.event_count` is of type `uint16_t`, so it wraps around after 65535 expirations.
 
 ---
 
-### stim_get_count
+### stim_get_event_count
 
 ```c
-uint16_t stim_get_count(const stim_t *timer);
+uint16_t stim_get_event_count(const stim_t *timer);
 ```
 
 Get the timer event count.
@@ -691,7 +693,7 @@ typedef struct {
     void *user_data;
     uint32_t expire_ticks;
     uint32_t period_ticks;
-    volatile uint16_t count;
+    volatile uint16_t event_count;
     uint8_t state;
 } stim_t;
 ```
@@ -700,8 +702,8 @@ typedef struct {
 * `user_data` - user data, set via `stim_init_timer()`
 * `expire_ticks` - absolute tick of the next expiration
 * `period_ticks` - timer period
-* `count` - expiration count, incremented on each expiration
-* `state` - running state (stopped / running)
+* `event_count` - expiration event count, incremented on each expiration
+* `state` - running state (`0` = stopped, `1` = running)
 
 Must be initialized via `stim_init_timer()`.
 
@@ -714,28 +716,28 @@ typedef struct {
 } stim_message_t;
 ```
 
-A single message in the command and event queues.
+A single message in the command queue or the expired-event queue. The `command` field is only meaningful in the command queue.
 
 ### stim_queue_t
 
 ```c
 typedef struct {
     stim_message_t *buffer;
-    uint8_t length;
+    uint8_t capacity;
     volatile uint8_t write_index;
     volatile uint8_t read_index;
 } stim_queue_t;
 ```
 
-Ring buffer.
+Ring buffer. `capacity` is the index mask maintained by `stim_init_group()`: `buffer` holds `capacity + 1` elements, and at most `capacity` messages can be queued.
 
 ### stim_group_t
 
 ```c
 typedef struct {
     volatile uint32_t timebase_ticks;
-    void (*cb)(stim_t *timer);
-    stim_cb_mode_t cb_mode;
+    void (*expired_cb)(stim_t *timer);
+    stim_callback_mode_t callback_mode;
     stim_queue_t command_queue;
     stim_queue_t expired_queue;
     struct stim_node head;
@@ -745,8 +747,8 @@ typedef struct {
 Timer group.
 
 * `timebase_ticks` - group timebase, incremented by `stim_timebase_inc()`
-* `cb` - expiration callback, called with the timer pointer
-* `cb_mode` - callback execution mode
+* `expired_cb` - expiration callback, called with the timer pointer
+* `callback_mode` - callback execution mode
 * `command_queue` - start/stop command queue
 * `expired_queue` - expiration event queue used in deferred mode
 * `head` - ordered-list head node
@@ -757,40 +759,52 @@ Must be initialized via `stim_init_group()`.
 
 ```c
 typedef struct {
-    void (*cb)(stim_t *timer);
-    stim_cb_mode_t cb_mode;
+    void (*expired_cb)(stim_t *timer);
+    stim_callback_mode_t callback_mode;
     stim_message_t *command_buffer;
     stim_message_t *expired_buffer;
-    uint8_t command_length;
-    uint8_t expired_length;
+    uint16_t command_queue_size;
+    uint16_t expired_queue_size;
 } stim_group_config_t;
 ```
 
 Group initialization configuration.
 
-* `cb` - expiration callback
-* `cb_mode` - callback execution mode
-* `command_buffer` / `command_length` - command queue buffer and length (required)
-* `expired_buffer` / `expired_length` - expiration queue buffer and length (needed in deferred mode)
+* `expired_cb` - expiration callback
+* `callback_mode` - callback execution mode
+* `command_buffer` / `command_queue_size` - command queue buffer and its element count (required; a power of two between `STIM_MIN_QUEUE_SIZE` and `STIM_MAX_QUEUE_SIZE`)
+* `expired_buffer` / `expired_queue_size` - expiration event queue buffer and its element count (same rule; required in deferred mode)
 
 ## Macros and Enums
 
-### stim_cb_mode_t
+### stim_callback_mode_t
 
 ```c
 typedef enum {
-    STIM_CB_MODE_DEFERRED = 0,
-    STIM_CB_MODE_IMMEDIATE,
-} stim_cb_mode_t;
+    STIM_CALLBACK_MODE_DEFERRED = 0,
+    STIM_CALLBACK_MODE_IMMEDIATE,
+} stim_callback_mode_t;
 ```
 
 Callback execution mode.
 
-* `STIM_CB_MODE_DEFERRED` - expiration events are queued and executed by `stim_dispatch()`
-* `STIM_CB_MODE_IMMEDIATE` - the callback is executed in `stim_poll()` on expiration
+* `STIM_CALLBACK_MODE_DEFERRED` - expiration events are queued and executed by `stim_dispatch()`
+* `STIM_CALLBACK_MODE_IMMEDIATE` - the callback is executed in `stim_poll()` on expiration
 
-### STIM_MAX_TICKS
+### STIM_MAX_PERIOD_TICKS
 
 Maximum allowed timer period, `((uint32_t)(-1)) >> 1` (`0x7FFFFFFF`, i.e. `INT32_MAX`).
 
 This value keeps the signed-difference comparison correct even when the tick wraps around.
+
+### STIM_MAX_QUEUE_SIZE
+
+Maximum number of elements of a queue buffer (`256`).
+
+Because the ring buffer always leaves one slot free, such a queue holds at most 255 messages.
+
+### STIM_MIN_QUEUE_SIZE
+
+Minimum number of elements of a queue buffer (`2`).
+
+A queue of `2` elements holds at most one message.
