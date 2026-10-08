@@ -20,6 +20,10 @@
 #ifndef SIMPLETIMER_PORT_H
 #define SIMPLETIMER_PORT_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @brief Enter the critical section.
  *
@@ -89,5 +93,9 @@ static inline void stim_unlock(int stim_lock_state) {
  *       STIM_ACQUIRE().
  */
 #define STIM_RELEASE() ((void)0)
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

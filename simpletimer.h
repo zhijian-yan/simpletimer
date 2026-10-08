@@ -16,10 +16,6 @@
 #ifndef SIMPLETIMER_H
 #define SIMPLETIMER_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stdint.h>
 
 /**
@@ -35,6 +31,10 @@ extern "C" {
 #include STIM_PORT_HEADER
 #else
 #include "simpletimer_port.h"
+#endif
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
 /**
